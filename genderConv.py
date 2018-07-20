@@ -6,7 +6,10 @@ import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
 
-use_cuda = False
+import numpy as np
+import matplotlib.pyplot as plt
+
+use_cuda = True
 device = torch.device("cuda" if use_cuda else "cpu")
 
 class AlexNet(nn.Module):
@@ -28,14 +31,13 @@ class AlexNet(nn.Module):
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
         self.classifier = nn.Sequential(
-            nn.Dropout(),
-            nn.Linear(256 * 6 * 6, 4096),
+            #nn.Dropout(),
+            nn.Linear(256 * 6 * 6, 1024),
             nn.ReLU(inplace=True),
-            nn.Dropout(),
-            nn.Linear(4096, 4096),
+            #nn.Dropout(),
+            nn.Linear(1024, 1024),
             nn.ReLU(inplace=True),
-            nn.Linear(4096, num_classes),
-            nn.Softmax(dim=1)
+            nn.Linear(1024, num_classes)
         )
 
     def forward(self, x):
@@ -47,8 +49,8 @@ class AlexNet(nn.Module):
 def train(model, device, criterion, train_loader, optimizer, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
-        #data, target = data.to(device), target.to(device).float().unsqueeze(1)
-        data, target = data.to(device), target.to(device)
+        data, target = data.to(device), target.to(device).float().unsqueeze(1)
+        #data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
         #loss = F.mse_loss(output, target)
@@ -60,13 +62,23 @@ def train(model, device, criterion, train_loader, optimizer, epoch):
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item()))
 
-with open('female_names.txt', 'rb') as f:
-    female_fnames = f.readlines()
-
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
-dataset = ImageFolder('gender_images',
+def make_weights_for_balanced_classes(images, nclasses):                        
+    count = [0] * nclasses
+    for item in images:
+        count[item[1]] += 1
+    weight_per_class = [0.] * nclasses
+    N = float(sum(count)) 
+    for i in range(nclasses):
+        weight_per_class[i] = N/float(count[i])
+    weight = [0] * len(images)
+    for idx, val in enumerate(images):
+        weight[idx] = weight_per_class[val[1]]
+    return weight
+
+dataset = ImageFolder('data/gender_images',
         transforms.Compose([
             transforms.Resize(224),
             transforms.RandomHorizontalFlip(),
@@ -74,12 +86,32 @@ dataset = ImageFolder('gender_images',
             normalize,
         ]))
 
-dataloader = DataLoader(dataset, shuffle=True, batch_size=8)
+weights = make_weights_for_balanced_classes(dataset.imgs, len(dataset.classes))
+sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights))
+
+dataloader = DataLoader(dataset, batch_size=8, sampler=sampler)
 
 e = enumerate(dataloader)
 
-model = AlexNet(2).to(device)
-optimizer = optim.SGD(model.parameters(), lr=.01, momentum=.5)
+def plotIm():
+    _, (inputs, targets) = next(e)
+    print(targets[0])
+    inp = inputs[0].numpy().transpose((1,2,0))
+    plt.imshow(inp)
+    plt.show()
+
+def eval():
+    model.eval()
+    _, (inputs, targets) = next(e)
+    outputs = model(inputs.to(device))
+    print(outputs)
+    print(targets)
+
+model = AlexNet(1).to(device)
+model.train()
+optimizer = optim.SGD(model.parameters(), lr=.1)
 
 criterion = nn.CrossEntropyLoss().to(device)
-train(model, device, criterion, dataloader, optimizer, 1)
+criterion = nn.MSELoss().to(device)
+for epoch in range(10):
+    train(model, device, criterion, dataloader, optimizer, epoch)
