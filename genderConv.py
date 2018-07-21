@@ -5,11 +5,14 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader
+from tensorboardX import SummaryWriter
 
 import numpy as np
 import matplotlib.pyplot as plt
 
-use_cuda = True
+writer = SummaryWriter()
+
+use_cuda = False
 device = torch.device("cuda" if use_cuda else "cpu")
 
 class AlexNet(nn.Module):
@@ -17,25 +20,32 @@ class AlexNet(nn.Module):
         super(AlexNet, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=11, stride=4, padding=2),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
             nn.Conv2d(64, 192, kernel_size=5, padding=2),
+            nn.BatchNorm2d(192),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
             nn.Conv2d(192, 384, kernel_size=3, padding=1),
+            nn.BatchNorm2d(384),
             nn.ReLU(inplace=True),
             nn.Conv2d(384, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2),
         )
         self.classifier = nn.Sequential(
             #nn.Dropout(),
             nn.Linear(256 * 6 * 6, 1024),
+            nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
             #nn.Dropout(),
             nn.Linear(1024, 1024),
+            nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
             nn.Linear(1024, num_classes)
         )
@@ -53,14 +63,35 @@ def train(model, device, criterion, train_loader, optimizer, epoch):
         #data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         output = model(data)
-        #loss = F.mse_loss(output, target)
         loss = criterion(output, target)
         loss.backward()
         optimizer.step()
         if batch_idx % 1 == 0:
+            writer.add_scalar('data/loss', loss.item(), batch_idx * len(data))
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item()))
+
+def test(model, device, criterion, test_loader):
+    model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            #data, target = data.to(device), target.to(device)
+            data, target = data.to(device), target.to(device).float().unsqueeze(1)
+            output = model(data)
+            test_loss += criterion(output, target).item() # sum up batch loss
+            correct += (output > .5).int().eq(target.int()).sum().item()
+
+            #print(target)
+            #print(output)
+            #print((output > .5).int().eq(target.int()).sum().item())
+
+    test_loss /= len(test_loader.dataset)
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+        test_loss, correct, len(test_loader.dataset),
+        100. * correct / len(test_loader.dataset)))
 
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -78,7 +109,7 @@ def make_weights_for_balanced_classes(images, nclasses):
         weight[idx] = weight_per_class[val[1]]
     return weight
 
-dataset = ImageFolder('data/gender_images',
+trainset = ImageFolder('data/gender_images/train',
         transforms.Compose([
             transforms.Resize(224),
             transforms.RandomHorizontalFlip(),
@@ -86,12 +117,20 @@ dataset = ImageFolder('data/gender_images',
             normalize,
         ]))
 
-weights = make_weights_for_balanced_classes(dataset.imgs, len(dataset.classes))
+testset = ImageFolder('data/gender_images/test',
+        transforms.Compose([
+            transforms.Resize(224),
+            transforms.ToTensor(),
+            normalize,
+        ]))
+
+weights = make_weights_for_balanced_classes(trainset.imgs, len(trainset.classes))
 sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights))
 
-dataloader = DataLoader(dataset, batch_size=8, sampler=sampler)
+trainloader = DataLoader(trainset, batch_size=64, sampler=sampler)
+testloader = DataLoader(testset, batch_size=1)
 
-e = enumerate(dataloader)
+e = enumerate(trainloader)
 
 def plotIm():
     _, (inputs, targets) = next(e)
@@ -109,9 +148,10 @@ def eval():
 
 model = AlexNet(1).to(device)
 model.train()
-optimizer = optim.SGD(model.parameters(), lr=.1)
+optimizer = optim.SGD(model.parameters(), lr=.01)
 
-criterion = nn.CrossEntropyLoss().to(device)
+#criterion = nn.CrossEntropyLoss().to(device)
 criterion = nn.MSELoss().to(device)
 for epoch in range(10):
-    train(model, device, criterion, dataloader, optimizer, epoch)
+    train(model, device, criterion, trainloader, optimizer, epoch)
+    test(model, device, criterion, testloader)
