@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 writer = SummaryWriter()
 
-use_cuda = False
+use_cuda = True
 device = torch.device("cuda" if use_cuda else "cpu")
 
 class AlexNet(nn.Module):
@@ -108,12 +108,12 @@ def train(model, device, criterion, train_loader, optimizer, epoch):
         loss.backward()
         optimizer.step()
         if batch_idx % 1 == 0:
-            writer.add_scalar('data/loss', loss.item(), batch_idx * len(data))
+            writer.add_scalar('data/train_loss', loss.item(), epoch * len(trainloader) * len(data) + batch_idx * len(data))
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item()))
 
-def test(model, device, criterion, test_loader):
+def test(model, device, criterion, test_loader, epoch):
     model.eval()
     test_loss = 0
     correct = 0
@@ -121,8 +121,9 @@ def test(model, device, criterion, test_loader):
         for data, target in test_loader:
             #data, target = data.to(device), target.to(device)
             data, target = data.to(device), target.to(device).float().unsqueeze(1)
-            output = model(data)
-            test_loss += criterion(output, data).item() # sum up batch loss
+            recon, env= model(data)
+            test_loss += criterion(recon, data).item() # sum up batch loss
+            writer.add_scalar('data/test_loss', test_loss, epoch)
 
             #print(target)
             #print(output)
@@ -133,7 +134,27 @@ def test(model, device, criterion, test_loader):
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
 
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        """
+        Args:
+            tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+        Returns:
+            Tensor: Normalized image.
+        """
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+            # The normalize code -> t.sub_(m).div_(s)
+        return tensor
+
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+unnormalize = UnNormalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
 def make_weights_for_balanced_classes(images, nclasses):                        
@@ -170,7 +191,7 @@ sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights))
 trainloader = DataLoader(trainset, batch_size=16, sampler=sampler)
 testloader = DataLoader(testset, batch_size=1)
 
-e = enumerate(trainloader)
+e = enumerate(testloader)
 
 def plotIm():
     _, (inputs, targets) = next(e)
@@ -182,9 +203,18 @@ def plotIm():
 def eval():
     model.eval()
     _, (inputs, targets) = next(e)
-    outputs = model(inputs.to(device))
-    print(outputs)
-    print(targets)
+    recon, enc = model(inputs.to(device))
+
+    inputs = unnormalize(inputs)
+    inputs = inputs[0].numpy().transpose((1,2,0))
+    plt.imshow(inputs)
+    plt.show()
+
+    recon = unnormalize(recon)
+    recon = recon[0].detach().cpu().numpy().transpose((1,2,0))
+
+    plt.imshow(recon)
+    plt.show()
 
 model = AlexNet(1).to(device)
 optimizer = optim.SGD(model.parameters(), lr=.001)
@@ -192,6 +222,12 @@ optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
 #criterion = nn.CrossEntropyLoss().to(device)
 criterion = nn.MSELoss().to(device)
-for epoch in range(10):
+for epoch in range(50):
     train(model, device, criterion, trainloader, optimizer, epoch)
-    test(model, device, criterion, testloader)
+    test(model, device, criterion, testloader, epoch)
+    fname = 'checkpoints/ae_' + str(epoch) + '.pth.tar'
+    torch.save({
+            'epoch': epoch,
+            'state_dict': model.state_dict(),
+            'optimizer' : optimizer.state_dict(),
+        }, fname)
