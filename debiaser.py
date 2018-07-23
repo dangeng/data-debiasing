@@ -1,3 +1,5 @@
+import argparse
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,64 +12,99 @@ from tensorboardX import SummaryWriter
 import numpy as np
 import matplotlib.pyplot as plt
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--resume', type=bool, default=False,
+                    help='Resume training from checkpoint')
+parser.add_argument('--ckpt-path', type=str, default=None,
+                    help='Path to resume checkpoint')
+args = parser.parse_args()
+
 writer = SummaryWriter()
 
 use_cuda = True
 device = torch.device("cuda" if use_cuda else "cpu")
+cpu = torch.device("cpu")
 
-class AlexNet(nn.Module):
+class Autoencoder(nn.Module):
     def __init__(self, num_classes=1000):
-        super(AlexNet, self).__init__()
-        self.encoderm = nn.Sequential(                                   # b, 3, 224, 224
-            nn.Conv2d(3, 128, kernel_size=10, stride=4, padding=3),      # b, 128, 56, 56
+        super(Autoencoder, self).__init__()
+        self.encoderm = nn.Sequential(# b, 3, 224, 224
+            nn.Conv2d(3, 128, kernel_size=10, stride=4, padding=3),      
+            # b, 128, 56, 56
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),                      # b, 128, 28, 28
-            nn.Conv2d(128, 192, kernel_size=5, padding=2),               # b, 192, 28, 28
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            # b, 128, 28, 28
+
+            nn.Conv2d(128, 192, kernel_size=5, padding=2),               
+            # b, 192, 28, 28
             nn.BatchNorm2d(192),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),                      # b, 192, 14, 14 = 32,448
-            nn.Conv2d(192, 384, kernel_size=3, padding=1),              # b, 384, 14, 14
+            nn.MaxPool2d(kernel_size=2, stride=2),                      
+            # b, 192, 14, 14 = 32,448
+
+            nn.Conv2d(192, 384, kernel_size=3, padding=1),              
+            # b, 384, 14, 14
             nn.BatchNorm2d(384),
             nn.ReLU(inplace=True),
-            nn.Conv2d(384, 256, kernel_size=3, padding=1),              # b, 256, 14, 14
+            nn.Conv2d(384, 256, kernel_size=3, padding=1),              
+            # b, 256, 14, 14
+
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),              # b, 256, 14, 14 = 43,264
-            #nn.ReLU(inplace=True),
-            #nn.MaxPool2d(kernel_size=3, stride=2),                      # b, 256, 6, 6
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),              
+            # b, 256, 14, 14 = 43,264
         )
 
-        self.encoder = nn.Sequential(                                   # b, 3, 224, 224
-            nn.Conv2d(3, 128, kernel_size=12, stride=4, padding=2),     # b, 128, 55, 55
+        self.encoder = nn.Sequential(# b, 3, 224, 224
+
+            nn.Conv2d(3, 128, kernel_size=12, stride=4, padding=2),     
+            # b, 128, 55, 55
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, 192, kernel_size=5, padding=2),              # b, 192, 55, 55
+
+            nn.Conv2d(128, 192, kernel_size=5, padding=2),              
+            # b, 192, 55, 55
             nn.BatchNorm2d(192),
             nn.ReLU(inplace=True),
-            nn.Conv2d(192, 384, kernel_size=3, stride=2, padding=1),    # b, 384, 28, 28
+
+            nn.Conv2d(192, 384, kernel_size=3, stride=2, padding=1),    
+            # b, 384, 28, 28
             nn.BatchNorm2d(384),
             nn.ReLU(inplace=True),
-            nn.Conv2d(384, 256, kernel_size=4, stride=2, padding=1),    # b, 256, 14, 14
+
+            nn.Conv2d(384, 256, kernel_size=4, stride=2, padding=1),    
+            # b, 256, 14, 14
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),              # b, 256, 14, 14 = 43,264
+
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),              
+            # b, 256, 14, 14 = 43,264
         )
 
-        self.decoder = nn.Sequential(                                   # b, 256, 14, 14
-            nn.ConvTranspose2d(256, 256, kernel_size=3, padding=1),              # b, 256, 14, 14
+        self.decoder = nn.Sequential(# b, 256, 14, 14
+            nn.ConvTranspose2d(256, 256, kernel_size=3, padding=1),              
+            # b, 256, 14, 14
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(256, 384, kernel_size=4, stride=2, padding=1),    # b, 192, 28, 28
+
+            nn.ConvTranspose2d(256, 384, kernel_size=4, stride=2, padding=1),    
+            # b, 192, 28, 28
             nn.BatchNorm2d(384),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(384, 192, kernel_size=3, stride=2, padding=1),    # b, 384, 13, 13
+
+            nn.ConvTranspose2d(384, 192, kernel_size=3, stride=2, padding=1),    
+            # b, 384, 13, 13
             nn.BatchNorm2d(192),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(192, 128, kernel_size=5, padding=2),              # b, 256, 13, 13
+
+            nn.ConvTranspose2d(192, 128, kernel_size=5, padding=2),              
+            # b, 256, 13, 13
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(128, 3, kernel_size=12, stride=4, padding=2),     # b, 256, 13, 13
+
+            nn.ConvTranspose2d(128, 3, kernel_size=12, stride=4, padding=2),     
+            # b, 256, 13, 13
             nn.Tanh(),
         )
 
@@ -78,13 +115,13 @@ class AlexNet(nn.Module):
         return x, enc
 
 class Discriminator(nn.Module):
-    def __init__(self, num_classes=1000):
-        super(AlexNet, self).__init__()
+    def __init__(self, num_classes=1):
+        super(Discriminator, self).__init__()
 
         self.feedforward = nn.Sequential(
-            nn.Linear(256 * 14 * 14, 2048),
+            nn.Linear(256 * 14 * 14, 1024),
             nn.ReLU(inplace=True),
-            nn.Linear(2048, 512),
+            nn.Linear(1024, 512),
             nn.ReLU(inplace=True),
             nn.Linear(512, 128),
             nn.ReLU(inplace=True),
@@ -133,6 +170,26 @@ def test(model, device, criterion, test_loader, epoch):
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
+
+def train_discriminator(discriminator, autoencoder, device, criterion, train_loader, optimizer, epoch):
+    discriminator.train()
+    autoencoder.eval()
+    for batch_idx, (data, target) in enumerate(train_loader):
+        data, target = data.to(device), target.to(cpu).float().unsqueeze(1)
+        recon, enc = autoencoder(data)
+
+        enc = enc.detach().to(cpu)
+        output = discriminator(enc)
+
+        loss = criterion(output, target)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        if batch_idx % 1 == 0:
+            writer.add_scalar('data/discriminator_train_loss', loss.item(), epoch * len(trainloader) * len(data) + batch_idx * len(data))
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                epoch, batch_idx * len(data), len(train_loader.dataset),
+                100. * batch_idx / len(train_loader), loss.item()))
 
 class UnNormalize(object):
     def __init__(self, mean, std):
@@ -189,7 +246,7 @@ weights = make_weights_for_balanced_classes(trainset.imgs, len(trainset.classes)
 sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights))
 
 trainloader = DataLoader(trainset, batch_size=16, sampler=sampler)
-testloader = DataLoader(testset, batch_size=1)
+testloader = DataLoader(testset, batch_size=1, shuffle=True)
 
 e = enumerate(testloader)
 
@@ -201,9 +258,9 @@ def plotIm():
     plt.show()
 
 def eval():
-    model.eval()
+    autoencoder.eval()
     _, (inputs, targets) = next(e)
-    recon, enc = model(inputs.to(device))
+    recon, enc = autoencoder(inputs.to(device))
 
     inputs = unnormalize(inputs)
     inputs = inputs[0].numpy().transpose((1,2,0))
@@ -216,18 +273,32 @@ def eval():
     plt.imshow(recon)
     plt.show()
 
-model = AlexNet(1).to(device)
-optimizer = optim.SGD(model.parameters(), lr=.001)
-optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
+    return enc
 
-#criterion = nn.CrossEntropyLoss().to(device)
+autoencoder = Autoencoder(1).to(device)
+
+if args.resume:
+    print('Loading model')
+    checkpoint = torch.load(args.ckpt_path)
+    autoencoder.load_state_dict(checkpoint['state_dict'])
+    print('Loaded model')
+
+optimizer = optim.Adam(autoencoder.parameters(), lr=1e-3, weight_decay=1e-5)
+discriminator_optimizer = optim.Adam(autoencoder.parameters(), lr=1e-3, weight_decay=1e-5)
+
 criterion = nn.MSELoss().to(device)
-for epoch in range(50):
-    train(model, device, criterion, trainloader, optimizer, epoch)
-    test(model, device, criterion, testloader, epoch)
+# Training autoencoder first
+for epoch in range(0):
+    train(autoencoder, device, criterion, trainloader, optimizer, epoch)
+    test(autoencoder, device, criterion, testloader, epoch)
     fname = 'checkpoints/ae_' + str(epoch) + '.pth.tar'
     torch.save({
             'epoch': epoch,
-            'state_dict': model.state_dict(),
+            'state_dict': autoencoder.state_dict(),
             'optimizer' : optimizer.state_dict(),
         }, fname)
+
+discriminator = Discriminator().to(cpu)
+
+for epoch in range(10):
+    train_discriminator(discriminator, autoencoder, device, criterion, trainloader, discriminator_optimizer, epoch)
