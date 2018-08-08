@@ -25,8 +25,6 @@ writer = SummaryWriter()
 
 use_cuda = True
 device = torch.device("cuda" if use_cuda else "cpu")
-cpu = torch.device("cpu")
-device = cpu
 
 class Debiaser(nn.Module):
     def __init__(self):
@@ -133,7 +131,8 @@ class Discriminator(nn.Module):
 def train(debiaser, discriminator, device, train_loader, debiaser_optimizer, discriminator_optimizer, epoch):
     debiaser.train()
     discriminator.train()
-    adversarial_loss = torch.nn.BCELoss()
+    discriminator_loss = nn.BCELoss().to(device)
+    adversarial_loss = nn.BCELoss().to(device)
     recon_loss = nn.MSELoss().to(device)
 
     for batch_idx, (data, target) in enumerate(train_loader):
@@ -141,42 +140,71 @@ def train(debiaser, discriminator, device, train_loader, debiaser_optimizer, dis
         #data, target = data.to(device), target.to(device)
         debiased = debiaser(data)
         pred = discriminator(debiased.detach())
+        pred_attached = discriminator(debiased)
 
         r_loss = recon_loss(debiased, data)
-        d_loss = adversarial_loss(pred, target)
+        a_loss = adversarial_loss(pred_attached, 1 - target)
+        g_loss = r_loss + a_loss
+
+        d_loss = discriminator_loss(pred, target)
 
         debiaser_optimizer.zero_grad()
-        r_loss.backward()
+        g_loss.backward()
         debiaser_optimizer.step()
 
         discriminator_optimizer.zero_grad()
         d_loss.backward()
         discriminator_optimizer.step()
 
-        if batch_idx % 1 == 0:
-            writer.add_scalar('data/train_loss', r_loss.item(), epoch * len(trainloader) * len(data) + batch_idx * len(data))
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+        if batch_idx % 2 == 0:
+            writer.add_scalar('data/train_r_loss', r_loss.item(), epoch * len(trainloader) * len(data) + batch_idx * len(data))
+            writer.add_scalar('data/train_d_loss', d_loss.item(), epoch * len(trainloader) * len(data) + batch_idx * len(data))
+            writer.add_scalar('data/train_a_loss', a_loss.item(), epoch * len(trainloader) * len(data) + batch_idx * len(data))
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tR-Loss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), r_loss.item()))
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tD-Loss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), d_loss.item()))
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tA-Loss: {:.6f}'.format(
+                epoch, batch_idx * len(data), len(train_loader.dataset),
+                100. * batch_idx / len(train_loader), a_loss.item()))
 
-def test(model, device, criterion, test_loader, epoch):
-    model.eval()
-    test_loss = 0
+def test(debiaser, discriminator, device, test_loader, epoch):
+    debiaser.eval()
+    discriminator.eval()
+    discriminator_loss = nn.BCELoss().to(device)
+    recon_loss = nn.MSELoss().to(device)
+
+    test_r_loss = 0
+    test_d_loss = 0
     correct = 0
     with torch.no_grad():
-        for data, target in test_loader:
-            #data, target = data.to(device), target.to(device)
+        for batch_idx, (data, target) in enumerate(test_loader):
             data, target = data.to(device), target.to(device).float().unsqueeze(1)
-            recon, env= model(data)
-            test_loss += criterion(recon, data).item() # sum up batch loss
-            writer.add_scalar('data/test_loss', test_loss, epoch)
+            #data, target = data.to(device), target.to(device)
+            debiased = debiaser(data)
+            pred = discriminator(debiased.detach())
 
-    test_loss /= len(test_loader.dataset)
+            r_loss = recon_loss(debiased, data)
+            d_loss = discriminator_loss(pred, target)
+
+            test_r_loss += recon_loss(debiased, data).item()
+            test_d_loss += discriminator_loss(pred, target).item()
+
+            correct += (pred > .5).int().eq(target.int()).sum().item()
+
+    test_r_loss /= len(test_loader.dataset)
+    test_d_loss /= len(test_loader.dataset)
+
+    writer.add_scalar('data/test_r_loss', test_r_loss, epoch)
+    writer.add_scalar('data/test_d_loss', test_d_loss, epoch)
+
     print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(test_loader.dataset),
+        test_r_loss, correct, len(test_loader.dataset),
+        100. * correct / len(test_loader.dataset)))
+    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+        test_d_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
 
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -216,7 +244,7 @@ def plotIm():
     plt.show()
 
 debiaser = Debiaser().to(device)
-discriminator = Discriminator().to(cpu)
+discriminator = Discriminator().to(device)
 
 if args.resume:
     print('Loading model')
@@ -231,11 +259,11 @@ discriminator_optimizer = optim.Adam(discriminator.parameters(), lr=1e-3, weight
 # Training autoencoder first
 for epoch in range(10):
     train(debiaser, discriminator, device, trainloader, debiaser_optimizer, discriminator_optimizer, epoch)
-    test(debiaser, device, criterion, testloader, epoch)
-    fname = 'checkpoints/ae_' + str(epoch) + '.pth.tar'
-    torch.save({
-            'epoch': epoch,
-            'state_dict': debiaser.state_dict(),
-            'optimizer' : optimizer.state_dict(),
-        }, fname)
+    test(debiaser, discriminator, device, testloader, epoch)
+    #fname = 'checkpoints/ae_' + str(epoch) + '.pth.tar'
+    #torch.save({
+            #'epoch': epoch,
+            #'state_dict': debiaser.state_dict(),
+            #'optimizer' : optimizer.state_dict(),
+        #}, fname)
 
